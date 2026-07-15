@@ -2,20 +2,16 @@
 
 import json
 
-import psycopg
 import pytest
 
 from watchbot import db, embeddings
 from watchbot.agent import SYSTEM_PROMPT, make_search_bills_tool
-from watchbot.config import EMBEDDING_DIMENSIONS, settings
+from watchbot.config import EMBEDDING_DIMENSIONS
 
 
 @pytest.fixture()
-def conn(monkeypatch):
-    try:
-        connection = db.connect(settings().database_url)
-    except psycopg.OperationalError:
-        pytest.skip("Postgres (compose.yml container) is not running")
+def conn(monkeypatch, test_database_url):
+    connection = db.connect(test_database_url)
     db.setup(connection)
     connection.execute("TRUNCATE bills")
     embedding = [0.0] * EMBEDDING_DIMENSIONS

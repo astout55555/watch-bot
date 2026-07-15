@@ -7,11 +7,10 @@ embeddings are stubbed with fixed vectors.
 
 import math
 
-import psycopg
 import pytest
 
 from watchbot import db
-from watchbot.config import EMBEDDING_DIMENSIONS, settings
+from watchbot.config import EMBEDDING_DIMENSIONS
 from watchbot.search import search_bills
 
 
@@ -28,11 +27,8 @@ def _blend(a: list[float], b: list[float], weight: float) -> list[float]:
 
 
 @pytest.fixture(scope="module")
-def conn():
-    try:
-        connection = db.connect(settings().database_url)
-    except psycopg.OperationalError:
-        pytest.skip("Postgres (compose.yml container) is not running")
+def conn(test_database_url):
+    connection = db.connect(test_database_url)
     db.setup(connection)
     yield connection
     connection.close()
