@@ -6,13 +6,16 @@ voted, or which members break with their party, and it cites the bills and roll-
 it used.
 
 ```
-You: How did the House vote this week on the purchase-privacy bill?
+You: How did the House vote on the bill about privacy in purchases?
 
-  ⚙ search_bills(query='purchase privacy')
-  ⚙ execute_graphql(query='{ allVotes(filter: {question: {includesInsensitive: "H R 1181"}}) ... }')
+  ⚙ search_bills(query='privacy in purchases')
+  ⚙ find_vote(chamber='house', topic='H.R. 1181', limit=10)
+  ⚙ get_vote_with_positions(vote_id='h240-119.2026')
 
-WatchBot: The House passed H.R. 1181 (hr1181-119), the Protecting Privacy in
-Purchases Act, on July 14, 2026 (roll call h240-119.2026). ...
+WatchBot: H.R. 1181 — Protecting Privacy in Purchases Act passed the House on
+July 14, 2026 by a vote of 221–201 (roll call h240-119.2026). Republicans voted
+overwhelmingly in favor (215 Yea, 1 Nay) while Democrats largely opposed it
+(200 Nay, 5 Yea). Full roll call: clerk.house.gov/evs/2026/roll240.xml
 ```
 
 ## How it works
