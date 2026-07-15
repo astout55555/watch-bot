@@ -1,0 +1,15 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg16
+    container_name: watchbot-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: watchbot
+      POSTGRES_DB: watchbot
+    ports:
+      - "5433:5432"
+    volumes:
+      - watchbot-pgdata:/var/lib/postgresql/data
+
+volumes:
+  watchbot-pgdata:
