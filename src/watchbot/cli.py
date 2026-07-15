@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 
 from mcp import ClientSession, StdioServerParameters
@@ -28,7 +29,10 @@ async def chat() -> None:
     try:
         conn = db.connect(config.database_url)
     except Exception as err:
-        sys.exit(f"Could not connect to Postgres ({err}).\nIs the database up? Try: docker compose up -d")
+        sys.exit(
+            f"Could not connect to Postgres ({err}).\n"
+            "Is the database up? Try: docker compose up -d"
+        )
 
     bill_count = conn.execute(
         "SELECT count(*) FROM bills WHERE congress = %s", (config.congress,)
@@ -84,10 +88,8 @@ def _short(args: dict, max_len: int = 90) -> str:
 
 
 def main() -> None:
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(chat())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":
