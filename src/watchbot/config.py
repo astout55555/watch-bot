@@ -12,7 +12,7 @@ load_dotenv()
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS = 1536
-CHAT_MODEL = "claude-sonnet-5"
+CHAT_MODEL = os.environ.get("WATCHBOT_MODEL", "claude-haiku-4-5")
 
 
 @dataclass(frozen=True)

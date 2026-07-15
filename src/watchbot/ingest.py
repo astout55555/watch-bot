@@ -99,12 +99,14 @@ class CongressGovClient:
         self._client = client or httpx.Client(timeout=30)
         self._api_key = api_key
 
-    def paged(self, path: str, max_items: int | None = None) -> Iterator[dict]:
+    def paged(
+        self, path: str, max_items: int | None = None, params: dict | None = None
+    ) -> Iterator[dict]:
         """Yield the per-item payloads of a paginated list endpoint."""
         offset = 0
         yielded = 0
         while True:
-            response = self._request(path, offset)
+            response = self._request(path, offset, params or {})
             data = response.json()
             # The list key varies by endpoint ("bills", "summaries").
             key = next(k for k in data if k not in ("pagination", "request"))
@@ -118,7 +120,7 @@ class CongressGovClient:
                 return
             offset += PAGE_SIZE
 
-    def _request(self, path: str, offset: int) -> httpx.Response:
+    def _request(self, path: str, offset: int, params: dict) -> httpx.Response:
         for _ in range(4):
             response = self._client.get(
                 f"{API_BASE}{path}",
@@ -127,6 +129,7 @@ class CongressGovClient:
                     "format": "json",
                     "limit": PAGE_SIZE,
                     "offset": offset,
+                    **params,
                 },
             )
             if response.status_code == 429:
@@ -149,10 +152,18 @@ def fetch_bills(
     return bills
 
 
+def congress_start_year(congress: int) -> int:
+    """First calendar year of a Congress (the 1st convened in 1789)."""
+    return 1789 + (congress - 1) * 2
+
+
 def fetch_summaries(client: CongressGovClient, congress: int) -> list[tuple[str, str, str]]:
+    # Without an explicit fromDateTime the summaries endpoint applies a narrow
+    # recent-updates window; anchor it to the start of the Congress to get all.
+    params = {"fromDateTime": f"{congress_start_year(congress)}-01-01T00:00:00Z"}
     summaries = []
     for bill_type in BILL_TYPES:
-        for item in client.paged(f"/summaries/{congress}/{bill_type}"):
+        for item in client.paged(f"/summaries/{congress}/{bill_type}", params=params):
             summaries.append(parse_summary_item(item))
     return summaries
 

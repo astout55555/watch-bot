@@ -92,3 +92,12 @@ class TestEmbeddingText:
             latest_action=None,
         )
         assert len(embedding_text(record)) <= 21_000
+
+
+class TestCongressStartYear:
+    def test_known_congresses(self):
+        from watchbot.ingest import congress_start_year
+
+        assert congress_start_year(119) == 2025
+        assert congress_start_year(118) == 2023
+        assert congress_start_year(1) == 1789

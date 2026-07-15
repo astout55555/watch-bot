@@ -38,7 +38,7 @@ bill data, the same ids join directly via `relatedBillId`.
 ## Setup
 
 You'll need Docker, [uv](https://docs.astral.sh/uv/), and three API keys: Anthropic
-(the chat agent runs on Claude Sonnet), OpenAI (embeddings only), and congress.gov
+(the chat agent runs on Claude), OpenAI (embeddings only), and congress.gov
 ([free signup](https://api.congress.gov/sign-up/)).
 
 ```bash
@@ -60,19 +60,13 @@ All settings live in `.env` (see `.env.example`):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Chat agent (Claude Sonnet) | required |
+| `ANTHROPIC_API_KEY` | Chat agent | required |
 | `OPENAI_API_KEY` | Embeddings (`text-embedding-3-small`) | required |
 | `CONGRESS_GOV_API_KEY` | Bill ingest | required |
+| `WATCHBOT_MODEL` | Which Claude model runs the agent | `claude-haiku-4-5` |
 | `DATABASE_URL` | Postgres + pgvector | the compose.yml container |
-| `GOVQL_MCP_COMMAND` | How to launch the GovQL MCP server | `uvx govql-mcp-server` |
+| `GOVQL_MCP_COMMAND` | How to launch the GovQL MCP server (any stdio MCP command works) | `uvx govql-mcp-server` |
 | `CONGRESS` | Which Congress to ingest and discuss | `119` |
-
-`GOVQL_MCP_COMMAND` accepts any command that speaks MCP over stdio, so you can point it
-at a local GovQL checkout to pick up unreleased tools:
-
-```bash
-GOVQL_MCP_COMMAND="uv run --project ~/govql/mcp-server govql-mcp-server"
-```
 
 ## Development
 
