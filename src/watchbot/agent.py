@@ -46,10 +46,13 @@ analytics for the US Congress.
 
 Linking bills to votes: GovQL's bills table is not yet populated, so `relatedBillId` \
 on votes is null. To find roll-call votes on a bill, search vote question text for the \
-bill's `vote_question_refs` (e.g. "H R 1181" or "H.R. 1181"). If a topic-search tool \
-over votes is available, use a ref as the topic; otherwise filter votes with GraphQL \
-using a case-insensitive "question contains" condition. If `relatedBillId` ever comes \
-back non-null, prefer it.
+bill's `vote_question_refs`. Vote questions write bill references in TWO styles -- \
+House clerk style with spaces ("H R 1181") and dotted style ("H.R. 1181") -- and a \
+substring search on one will NOT match the other, so try the spaced form first and \
+fall back to the dotted form before concluding a bill has no votes. If a topic-search \
+tool over votes is available, use a ref as the topic; otherwise filter votes with \
+GraphQL using a case-insensitive "question contains" condition. If `relatedBillId` \
+ever comes back non-null, prefer it.
 
 Grounding rules:
 - Never state a bill number, vote tally, or member position from memory -- only from \
@@ -62,7 +65,7 @@ comparing members or votes. Lead with the answer, not your process.
 """
 
 
-def make_search_bills_tool(conn: psycopg.Connection):
+def make_search_bills_tool(conn: psycopg.Connection, congress: int):
     """Build the local semantic-search tool bound to a database connection."""
 
     @beta_async_tool
@@ -77,7 +80,7 @@ def make_search_bills_tool(conn: psycopg.Connection):
             query: A natural-language topic, e.g. "surprise medical billing".
             limit: Maximum number of bills to return (default 8).
         """
-        hits = await asyncio.to_thread(search.search_bills, conn, query, limit)
+        hits = await asyncio.to_thread(search.search_bills, conn, query, congress, limit)
         results = []
         for hit in hits:
             ref = parse_bill_id(hit.bill_id)
@@ -85,6 +88,7 @@ def make_search_bills_tool(conn: psycopg.Connection):
             results.append(
                 {
                     "bill_id": hit.bill_id,
+                    "congress": hit.congress,
                     "title": hit.title,
                     "summary": summary[:1200] + ("..." if len(summary) > 1200 else ""),
                     "latest_action": hit.latest_action,
@@ -97,9 +101,11 @@ def make_search_bills_tool(conn: psycopg.Connection):
     return search_bills
 
 
-async def build_tools(conn: psycopg.Connection, mcp_session: ClientSession) -> list:
+async def build_tools(
+    conn: psycopg.Connection, mcp_session: ClientSession, congress: int
+) -> list:
     tools_result = await mcp_session.list_tools()
-    return [make_search_bills_tool(conn)] + [
+    return [make_search_bills_tool(conn, congress)] + [
         async_mcp_tool(tool, mcp_session) for tool in tools_result.tools
     ]
 

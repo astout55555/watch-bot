@@ -15,9 +15,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Ordered so longer types match before their prefixes (hconres before hres, etc.)
-BILL_TYPES = ("hconres", "hjres", "hres", "sconres", "sjres", "sres", "hr", "s")
-
 # type -> (spaced clerk style pieces, dotted style)
 _STYLE = {
     "hr": ("H R", "H.R."),
@@ -30,7 +27,9 @@ _STYLE = {
     "sconres": ("S CON RES", "S.Con.Res."),
 }
 
-_BILL_ID_RE = re.compile(r"^([a-z]+)(\d+)-(\d+)$")
+BILL_TYPES = tuple(_STYLE)
+
+_BILL_ID_RE = re.compile(r"^([a-z]+)(\d+)-(\d+)\Z")
 
 
 @dataclass(frozen=True)

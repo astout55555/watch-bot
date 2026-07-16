@@ -15,7 +15,6 @@ class BillHit:
     title: str
     summary: str | None
     congress: int
-    sponsor: str | None
     latest_action: str | None
     similarity: float
 
@@ -23,10 +22,11 @@ class BillHit:
 def search_bills(
     conn: psycopg.Connection,
     query: str,
+    congress: int,
     limit: int = 8,
     query_embedding: list[float] | None = None,
 ) -> list[BillHit]:
-    """Return the bills most semantically similar to `query`.
+    """Return the bills of one Congress most semantically similar to `query`.
 
     `query_embedding` lets tests (or batch callers) skip the OpenAI call.
     """
@@ -35,13 +35,14 @@ def search_bills(
 
     rows = conn.execute(
         """
-        SELECT bill_id, title, summary, congress, sponsor, latest_action,
+        SELECT bill_id, title, summary, congress, latest_action,
                1 - (embedding <=> %s::vector) AS similarity
         FROM bills
+        WHERE congress = %s
         ORDER BY similarity DESC
         LIMIT %s
         """,
-        (query_embedding, limit),
+        (query_embedding, congress, limit),
     ).fetchall()
 
     return [BillHit(*row) for row in rows]

@@ -54,8 +54,9 @@ uv run watchbot-ingest      # full Congress; try --limit 200 for a quick first p
 uv run watchbot
 ```
 
-Re-running `watchbot-ingest` only embeds bills it hasn't seen; pass `--refresh` to
-re-embed everything (for example after a batch of new CRS summaries lands).
+Ingest is incremental: each run records a high-water mark and later runs fetch only
+bills and summaries changed since (a daily top-up takes seconds). Pass `--refresh`
+to ignore the mark and re-fetch the whole Congress.
 
 ## Configuration
 

@@ -42,6 +42,9 @@ def seeded(conn):
     rows = [
         ("hr1181-119", "hr", 1181, 119, "Protecting Privacy in Purchases Act", privacy),
         ("hr139-119", "hr", 139, 119, "Sunshine Protection Act", daylight),
+        # A prior-Congress bill with an identical embedding: must never appear
+        # in results for congress 119.
+        ("hr9999-118", "hr", 9999, 118, "Old Privacy Act", privacy),
     ]
     for bill_id, bill_type, number, congress, title, embedding in rows:
         conn.execute(
@@ -51,20 +54,24 @@ def seeded(conn):
             """,
             (bill_id, bill_type, number, congress, title, embedding),
         )
-    conn.commit()
     return {"privacy": privacy, "daylight": daylight}
 
 
 class TestSearchBills:
     def test_ranks_closest_bill_first(self, conn, seeded):
         near_privacy = _blend(seeded["privacy"], seeded["daylight"], 0.9)
-        hits = search_bills(conn, "purchase privacy", query_embedding=near_privacy)
+        hits = search_bills(conn, "purchase privacy", 119, query_embedding=near_privacy)
         assert [h.bill_id for h in hits] == ["hr1181-119", "hr139-119"]
         assert hits[0].similarity > hits[1].similarity
         assert hits[0].title == "Protecting Privacy in Purchases Act"
 
+    def test_scoped_to_requested_congress(self, conn, seeded):
+        hits = search_bills(conn, "privacy", 119, query_embedding=seeded["privacy"])
+        assert "hr9999-118" not in {h.bill_id for h in hits}
+        assert all(h.congress == 119 for h in hits)
+
     def test_respects_limit(self, conn, seeded):
-        hits = search_bills(conn, "anything", limit=1, query_embedding=seeded["daylight"])
+        hits = search_bills(conn, "anything", 119, limit=1, query_embedding=seeded["daylight"])
         assert len(hits) == 1
         assert hits[0].bill_id == "hr139-119"
 

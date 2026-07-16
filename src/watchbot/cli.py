@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import sys
 
+import psycopg
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from rich.console import Console
@@ -34,9 +35,12 @@ async def chat() -> None:
             "Is the database up? Try: docker compose up -d"
         )
 
-    bill_count = conn.execute(
-        "SELECT count(*) FROM bills WHERE congress = %s", (config.congress,)
-    ).fetchone()[0]
+    try:
+        bill_count = conn.execute(
+            "SELECT count(*) FROM bills WHERE congress = %s", (config.congress,)
+        ).fetchone()[0]
+    except psycopg.errors.UndefinedTable:
+        sys.exit("Database schema is missing -- run `uv run watchbot-setup-db` first.")
     if bill_count == 0:
         console.print(
             "[yellow]The bills index is empty -- run `uv run watchbot-ingest` first.\n"
@@ -48,7 +52,7 @@ async def chat() -> None:
 
     async with stdio_client(server) as (read, write), ClientSession(read, write) as mcp_session:
         await mcp_session.initialize()
-        tools = await build_tools(conn, mcp_session)
+        tools = await build_tools(conn, mcp_session, config.congress)
         agent = WatchBotAgent(tools, congress=config.congress)
 
         console.print(BANNER.format(congress=config.congress))

@@ -33,7 +33,6 @@ def conn(monkeypatch, test_database_url):
             embedding,
         ),
     )
-    connection.commit()
     monkeypatch.setattr(embeddings, "embed_query", lambda text: embedding)
     yield connection
     connection.close()
@@ -41,17 +40,18 @@ def conn(monkeypatch, test_database_url):
 
 class TestSearchBillsTool:
     async def test_returns_json_with_vote_question_refs(self, conn):
-        tool = make_search_bills_tool(conn)
+        tool = make_search_bills_tool(conn, congress=119)
         result = json.loads(await tool.call({"query": "purchase privacy"}))
         (hit,) = result["results"]
         assert hit["bill_id"] == "hr1181-119"
+        assert hit["congress"] == 119
         assert hit["title"] == "Protecting Privacy in Purchases Act"
         assert "H R 1181" in hit["vote_question_refs"]
         assert "H.R. 1181" in hit["vote_question_refs"]
         assert hit["latest_action"] == "2026-07-14: Passed the House."
 
     def test_tool_schema_generated_from_signature(self, conn):
-        tool = make_search_bills_tool(conn)
+        tool = make_search_bills_tool(conn, congress=119)
         definition = tool.to_dict()
         assert definition["name"] == "search_bills"
         assert "query" in definition["input_schema"]["properties"]

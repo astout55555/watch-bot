@@ -2,9 +2,11 @@
 
 Uses the bulk list endpoints -- ``/v3/bill/{congress}`` for bills and
 ``/v3/summaries/{congress}/{type}`` for CRS summaries -- so a full-Congress
-ingest is on the order of a hundred requests, not one per bill. Bills are
-keyed by GovQL's canonical bill_id (e.g. ``hr1181-119``) so the index joins
-cleanly against GovQL vote data.
+ingest is on the order of a hundred requests, not one per bill. Each run
+records a high-water mark in ``ingest_runs``; later runs pass it as
+``fromDateTime`` so only bills and summaries changed since the last run are
+fetched and re-embedded. Bills are keyed by GovQL's canonical bill_id
+(e.g. ``hr1181-119``) so the index joins cleanly against GovQL vote data.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import psycopg
@@ -29,6 +32,9 @@ PAGE_SIZE = 250
 # text-embedding-3-small caps input at 8191 tokens; ~20k chars is a safe bound.
 MAX_EMBED_CHARS = 20_000
 EMBED_BATCH = 100
+# Re-fetch a little history before the stored high-water mark; upserts are
+# idempotent, so the overlap only guards against clock skew with the API.
+WATERMARK_OVERLAP = timedelta(days=1)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -68,22 +74,38 @@ def parse_bill_item(item: dict) -> BillRecord:
     )
 
 
-def parse_summary_item(item: dict) -> tuple[str, str, str]:
-    """Return (bill_id, action_date, plain-text summary)."""
+def parse_summary_item(item: dict) -> BillRecord:
+    """Build a BillRecord carrying this summary, from the summary's own bill stub.
+
+    Summaries can change without the parent bill appearing in an incremental
+    bills fetch, so each summary carries enough to stand alone as an upsert.
+    """
     bill = item["bill"]
-    bill_id = canonical_bill_id(bill["type"], int(bill["number"]), int(bill["congress"]))
-    return bill_id, item.get("actionDate", ""), plain_text(item.get("text", ""))
+    congress = int(bill["congress"])
+    number = int(bill["number"])
+    return BillRecord(
+        bill_id=canonical_bill_id(bill["type"], number, congress),
+        bill_type=bill["type"].lower(),
+        number=number,
+        congress=congress,
+        title=bill.get("title") or "(untitled)",
+        summary=plain_text(item.get("text", "")),
+        latest_action=None,
+        _summary_date=item.get("actionDate") or "",
+    )
 
 
-def merge_summaries(
-    bills: dict[str, BillRecord], summaries: list[tuple[str, str, str]]
-) -> None:
-    """Attach each bill's most recent summary; ignore summaries for unknown bills."""
-    for bill_id, action_date, text in summaries:
-        record = bills.get(bill_id)
-        if record is not None and action_date >= record._summary_date:
-            record.summary = text
-            record._summary_date = action_date
+def merge_summaries(bills: dict[str, BillRecord], summaries: list[BillRecord]) -> None:
+    """Fold summary records into the bills dict, keeping each bill's newest summary.
+
+    Summaries for bills missing from the fetch are added as standalone records
+    (a summary-only change on an incremental run still gets upserted).
+    """
+    for summary_record in summaries:
+        record = bills.setdefault(summary_record.bill_id, summary_record)
+        if summary_record._summary_date >= record._summary_date:
+            record.summary = summary_record.summary
+            record._summary_date = summary_record._summary_date
 
 
 def embedding_text(record: BillRecord) -> str:
@@ -100,16 +122,24 @@ class CongressGovClient:
         self._api_key = api_key
 
     def paged(
-        self, path: str, max_items: int | None = None, params: dict | None = None
+        self,
+        path: str,
+        key: str,
+        max_items: int | None = None,
+        params: dict | None = None,
     ) -> Iterator[dict]:
-        """Yield the per-item payloads of a paginated list endpoint."""
+        """Yield the per-item payloads of a paginated list endpoint.
+
+        `key` names the response's list field ("bills", "summaries") so an
+        unexpected response shape fails loudly instead of guessing.
+        """
         offset = 0
         yielded = 0
         while True:
             response = self._request(path, offset, params or {})
             data = response.json()
-            # The list key varies by endpoint ("bills", "summaries").
-            key = next(k for k in data if k not in ("pagination", "request"))
+            if key not in data:
+                raise RuntimeError(f"Unexpected response from {path}: keys {sorted(data)}")
             items = data[key]
             for item in items:
                 yield item
@@ -124,16 +154,17 @@ class CongressGovClient:
         for _ in range(4):
             response = self._client.get(
                 f"{API_BASE}{path}",
+                # Fixed keys come last so callers can never override pagination.
                 params={
+                    **params,
                     "api_key": self._api_key,
                     "format": "json",
                     "limit": PAGE_SIZE,
                     "offset": offset,
-                    **params,
                 },
             )
             if response.status_code == 429:
-                wait = int(response.headers.get("retry-after", 30))
+                wait = _retry_after_seconds(response.headers.get("retry-after"))
                 print(f"  rate limited; sleeping {wait}s...", file=sys.stderr)
                 time.sleep(wait)
                 continue
@@ -142,11 +173,23 @@ class CongressGovClient:
         raise RuntimeError(f"Still rate-limited after retries: {path}")
 
 
+def _retry_after_seconds(header: str | None, default: int = 30) -> int:
+    """Retry-After may be delay-seconds or an HTTP-date; fall back on anything odd."""
+    try:
+        return int(header) if header else default
+    except ValueError:
+        return default
+
+
 def fetch_bills(
-    client: CongressGovClient, congress: int, max_items: int | None = None
+    client: CongressGovClient,
+    congress: int,
+    since: str,
+    max_items: int | None = None,
 ) -> dict[str, BillRecord]:
     bills: dict[str, BillRecord] = {}
-    for item in client.paged(f"/bill/{congress}", max_items=max_items):
+    params = {"fromDateTime": since}
+    for item in client.paged(f"/bill/{congress}", key="bills", max_items=max_items, params=params):
         record = parse_bill_item(item)
         bills[record.bill_id] = record
     return bills
@@ -157,15 +200,44 @@ def congress_start_year(congress: int) -> int:
     return 1789 + (congress - 1) * 2
 
 
-def fetch_summaries(client: CongressGovClient, congress: int) -> list[tuple[str, str, str]]:
-    # Without an explicit fromDateTime the summaries endpoint applies a narrow
-    # recent-updates window; anchor it to the start of the Congress to get all.
-    params = {"fromDateTime": f"{congress_start_year(congress)}-01-01T00:00:00Z"}
+def fetch_summaries(
+    client: CongressGovClient,
+    congress: int,
+    since: str,
+    max_items: int | None = None,
+) -> list[BillRecord]:
+    # The summaries endpoint applies a narrow recent-updates window unless
+    # fromDateTime is explicit, so always pass one.
+    params = {"fromDateTime": since}
     summaries = []
     for bill_type in BILL_TYPES:
-        for item in client.paged(f"/summaries/{congress}/{bill_type}", params=params):
+        path = f"/summaries/{congress}/{bill_type}"
+        for item in client.paged(path, key="summaries", max_items=max_items, params=params):
             summaries.append(parse_summary_item(item))
     return summaries
+
+
+def fetch_window_start(conn: psycopg.Connection, congress: int, refresh: bool) -> str:
+    """fromDateTime for this run: just before the last run, or the Congress start."""
+    row = None
+    if not refresh:
+        row = conn.execute(
+            "SELECT last_fetched_at FROM ingest_runs WHERE congress = %s", (congress,)
+        ).fetchone()
+    if row is None:
+        return f"{congress_start_year(congress)}-01-01T00:00:00Z"
+    start = row[0] - WATERMARK_OVERLAP
+    return start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def record_run(conn: psycopg.Connection, congress: int, fetched_at: datetime) -> None:
+    conn.execute(
+        """
+        INSERT INTO ingest_runs (congress, last_fetched_at) VALUES (%s, %s)
+        ON CONFLICT (congress) DO UPDATE SET last_fetched_at = EXCLUDED.last_fetched_at
+        """,
+        (congress, fetched_at),
+    )
 
 
 def upsert_bills(conn: psycopg.Connection, records: list[BillRecord]) -> None:
@@ -173,19 +245,21 @@ def upsert_bills(conn: psycopg.Connection, records: list[BillRecord]) -> None:
         return
     vectors = embeddings.embed_texts([embedding_text(r) for r in records])
     with conn.cursor() as cur:
-        for record, vector in zip(records, vectors, strict=True):
-            cur.execute(
-                """
-                INSERT INTO bills
-                    (bill_id, bill_type, bill_number, congress, title, summary,
-                     latest_action, embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (bill_id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    summary = EXCLUDED.summary,
-                    latest_action = EXCLUDED.latest_action,
-                    embedding = EXCLUDED.embedding
-                """,
+        # COALESCE keeps stored values when an incremental record lacks them
+        # (a changed bill fetched without its unchanged summary, or vice versa).
+        cur.executemany(
+            """
+            INSERT INTO bills
+                (bill_id, bill_type, bill_number, congress, title, summary,
+                 latest_action, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (bill_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                summary = COALESCE(EXCLUDED.summary, bills.summary),
+                latest_action = COALESCE(EXCLUDED.latest_action, bills.latest_action),
+                embedding = EXCLUDED.embedding
+            """,
+            [
                 (
                     record.bill_id,
                     record.bill_type,
@@ -195,9 +269,10 @@ def upsert_bills(conn: psycopg.Connection, records: list[BillRecord]) -> None:
                     record.summary,
                     record.latest_action,
                     vector,
-                ),
-            )
-    conn.commit()
+                )
+                for record, vector in zip(records, vectors, strict=True)
+            ],
+        )
 
 
 def ingest(
@@ -207,38 +282,42 @@ def ingest(
     max_bills: int | None = None,
     refresh: bool = False,
 ) -> int:
-    print(f"Fetching bills for the {congress}th Congress...")
-    bills = fetch_bills(client, congress, max_items=max_bills)
+    run_started = datetime.now(UTC)
+    since = fetch_window_start(conn, congress, refresh)
+    print(f"Fetching bills for the {congress}th Congress changed since {since}...")
+    bills = fetch_bills(client, congress, since, max_items=max_bills)
     print(f"  {len(bills)} bills fetched.")
 
     print("Fetching CRS summaries...")
-    merge_summaries(bills, fetch_summaries(client, congress))
+    merge_summaries(bills, fetch_summaries(client, congress, since, max_items=max_bills))
     with_summary = sum(1 for b in bills.values() if b.summary)
-    print(f"  {with_summary} bills have summaries.")
-
-    if not refresh:
-        existing = {
-            row[0]
-            for row in conn.execute(
-                "SELECT bill_id FROM bills WHERE congress = %s", (congress,)
-            )
-        }
-        bills = {k: v for k, v in bills.items() if k not in existing}
-        print(f"  {len(bills)} bills are new (use --refresh to re-embed everything).")
+    print(f"  {len(bills)} bills to store ({with_summary} carrying summaries).")
 
     records = list(bills.values())
     for start in range(0, len(records), EMBED_BATCH):
         batch = records[start : start + EMBED_BATCH]
         upsert_bills(conn, batch)
         print(f"  embedded and stored {min(start + EMBED_BATCH, len(records))}/{len(records)}")
+
+    # Only advance the high-water mark on complete (un-limited) runs.
+    if max_bills is None:
+        record_run(conn, congress, run_started)
     return len(records)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest congress.gov bills into WatchBot.")
-    parser.add_argument("--limit", type=int, default=None, help="Max bills to fetch (for testing)")
     parser.add_argument(
-        "--refresh", action="store_true", help="Re-embed bills already in the database"
+        "--limit",
+        type=int,
+        default=None,
+        help="Max bills and summaries to fetch per endpoint (smoke testing; "
+        "does not advance the incremental high-water mark)",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Ignore the incremental high-water mark: re-fetch and re-embed the whole Congress",
     )
     args = parser.parse_args()
 

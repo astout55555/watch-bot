@@ -2,6 +2,7 @@ services:
   db:
     image: pgvector/pgvector:0.8.0-pg16
     container_name: watchbot-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: watchbot
